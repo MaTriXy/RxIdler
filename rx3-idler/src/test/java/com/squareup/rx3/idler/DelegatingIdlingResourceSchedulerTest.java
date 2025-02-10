@@ -1,12 +1,10 @@
-package com.squareup.rx.idler;
+package com.squareup.rx3.idler;
 
-import androidx.test.espresso.IdlingResource;
+import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.schedulers.TestScheduler;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Before;
 import org.junit.Test;
-import rx.Scheduler;
-import rx.functions.Action0;
-import rx.schedulers.TestScheduler;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -16,15 +14,11 @@ import static org.junit.Assert.assertTrue;
 
 public final class DelegatingIdlingResourceSchedulerTest {
   private final TestScheduler delegate = new TestScheduler();
-  private final IdlingResourceScheduler scheduler = RxIdler.wrap(delegate, "Bob");
+  private final IdlingResourceScheduler scheduler = Rx3Idler.wrap(delegate, "Bob");
   private final AtomicInteger idleCount = new AtomicInteger();
 
   @Before public void setUp() {
-    scheduler.registerIdleTransitionCallback(new IdlingResource.ResourceCallback() {
-      @Override public void onTransitionToIdle() {
-        idleCount.incrementAndGet();
-      }
-    });
+    scheduler.registerIdleTransitionCallback(idleCount::incrementAndGet);
   }
 
   @Test public void name() {
@@ -39,43 +33,43 @@ public final class DelegatingIdlingResourceSchedulerTest {
 
   @Test public void scheduledWorkReportsBusy() {
     Scheduler.Worker worker = scheduler.createWorker();
-    worker.schedule(new CountingAction());
+    worker.schedule(new CountingRunnable());
     assertBusy();
   }
 
   @Test public void scheduledWorkUnsubscribedReportsIdle() {
     Scheduler.Worker worker = scheduler.createWorker();
-    worker.schedule(new CountingAction()).unsubscribe();
+    worker.schedule(new CountingRunnable()).dispose();
     assertIdle(1);
   }
 
   @Test public void scheduleWithZeroDelayReportsBusy() {
     Scheduler.Worker worker = scheduler.createWorker();
-    worker.schedule(new CountingAction(), 0, SECONDS);
+    worker.schedule(new CountingRunnable(), 0, SECONDS);
     assertBusy();
   }
 
   @Test public void scheduleWithNonZeroDelayReportsIdle() {
     Scheduler.Worker worker = scheduler.createWorker();
-    worker.schedule(new CountingAction(), 1, SECONDS);
+    worker.schedule(new CountingRunnable(), 1, SECONDS);
     assertIdle(0);
   }
 
   @Test public void schedulePeriodicallyWithZeroDelayReportsBusy() {
     Scheduler.Worker worker = scheduler.createWorker();
-    worker.schedulePeriodically(new CountingAction(), 0, 1, SECONDS);
+    worker.schedulePeriodically(new CountingRunnable(), 0, 1, SECONDS);
     assertBusy();
   }
 
   @Test public void schedulePeriodicallyWithNonZeroDelayReportsIdle() {
     Scheduler.Worker worker = scheduler.createWorker();
-    worker.schedulePeriodically(new CountingAction(), 1, 1, SECONDS);
+    worker.schedulePeriodically(new CountingRunnable(), 1, 1, SECONDS);
     assertIdle(0);
   }
 
   @Test public void betweenPeriodicSchedulesReportsIdle() {
     Scheduler.Worker worker = scheduler.createWorker();
-    CountingAction action = new CountingAction();
+    CountingRunnable action = new CountingRunnable();
     worker.schedulePeriodically(action, 0, 1, SECONDS);
     delegate.triggerActions();
     assertEquals(1, action.count());
@@ -87,43 +81,37 @@ public final class DelegatingIdlingResourceSchedulerTest {
 
   @Test public void runningWorkReportsBusy() {
     Scheduler.Worker worker = scheduler.createWorker();
-    worker.schedule(new Action0() {
-      @Override public void call() {
-        assertBusy();
-      }
-    });
+    worker.schedule(this::assertBusy);
     delegate.triggerActions();
   }
 
   @Test public void unsubscribingScheduledWorksReportsIdle() {
     Scheduler.Worker worker = scheduler.createWorker();
-    worker.schedule(new CountingAction());
-    worker.unsubscribe();
+    worker.schedule(new CountingRunnable());
+    worker.dispose();
     assertIdle(1);
   }
 
   @Test public void unsubscribingScheduledWorkWhileRunningWorkReportsBusy() {
     final Scheduler.Worker worker = scheduler.createWorker();
-    worker.schedule(new Action0() {
-      @Override public void call() {
-        worker.unsubscribe();
-        assertBusy();
-      }
+    worker.schedule(() -> {
+      worker.dispose();
+      assertBusy();
     });
     delegate.triggerActions();
   }
 
   @Test public void scheduleWorkAfterUnsubscribedReportsIdle() {
     Scheduler.Worker worker = scheduler.createWorker();
-    worker.unsubscribe();
-    worker.schedule(new CountingAction());
+    worker.dispose();
+    worker.schedule(new CountingRunnable());
     assertIdle(0);
   }
 
   @Test public void finishingWorkWithoutRegisteredCallbackDoesNotCrash() {
-    IdlingResourceScheduler scheduler = RxIdler.wrap(delegate, "Bob");
+    IdlingResourceScheduler scheduler = Rx3Idler.wrap(delegate, "Bob");
     Scheduler.Worker worker = scheduler.createWorker();
-    worker.schedule(new CountingAction());
+    worker.schedule(new CountingRunnable());
     delegate.triggerActions();
   }
 

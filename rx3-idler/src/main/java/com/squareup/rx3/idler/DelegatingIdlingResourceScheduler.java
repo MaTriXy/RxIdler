@@ -1,14 +1,12 @@
-package com.squareup.rx.idler;
+package com.squareup.rx3.idler;
 
 import androidx.annotation.Nullable;
 import androidx.annotation.RestrictTo;
+import io.reactivex.rxjava3.core.Scheduler;
+import io.reactivex.rxjava3.disposables.CompositeDisposable;
+import io.reactivex.rxjava3.disposables.Disposable;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import rx.Scheduler;
-import rx.Subscription;
-import rx.functions.Action0;
-import rx.subscriptions.CompositeSubscription;
-import rx.subscriptions.Subscriptions;
 
 import static androidx.annotation.RestrictTo.Scope.LIBRARY;
 
@@ -39,55 +37,52 @@ final class DelegatingIdlingResourceScheduler extends IdlingResourceScheduler {
   @Override public Worker createWorker() {
     final Worker delegateWorker = delegate.createWorker();
     return new Worker() {
-      private final CompositeSubscription subscriptions = new CompositeSubscription(delegateWorker);
+      private final CompositeDisposable disposables = new CompositeDisposable(delegateWorker);
 
-      @Override public Subscription schedule(Action0 action) {
-        if (subscriptions.isUnsubscribed()) {
-          return Subscriptions.unsubscribed();
+      @Override public Disposable schedule(Runnable action) {
+        if (disposables.isDisposed()) {
+          return Disposable.disposed();
         }
         ScheduledWork work = createWork(action, 0L, 0L);
-        Subscription subscription = delegateWorker.schedule(work);
-        ScheduledWorkSubscription workSubscription =
-            new ScheduledWorkSubscription(work, subscription);
-        subscriptions.add(workSubscription);
-        return workSubscription;
+        Disposable disposable = delegateWorker.schedule(work);
+        ScheduledWorkDisposable workDisposable = new ScheduledWorkDisposable(work, disposable);
+        disposables.add(workDisposable);
+        return workDisposable;
       }
 
-      @Override public Subscription schedule(Action0 action, long delayTime, TimeUnit unit) {
-        if (subscriptions.isUnsubscribed()) {
-          return Subscriptions.unsubscribed();
+      @Override public Disposable schedule(Runnable action, long delayTime, TimeUnit unit) {
+        if (disposables.isDisposed()) {
+          return Disposable.disposed();
         }
         ScheduledWork work = createWork(action, delayTime, 0L);
-        Subscription subscription = delegateWorker.schedule(work, delayTime, unit);
-        subscriptions.add(subscription);
-        ScheduledWorkSubscription workSubscription =
-            new ScheduledWorkSubscription(work, subscription);
-        subscriptions.add(workSubscription);
-        return workSubscription;
+        Disposable disposable = delegateWorker.schedule(work, delayTime, unit);
+        disposables.add(disposable);
+        ScheduledWorkDisposable workDisposable = new ScheduledWorkDisposable(work, disposable);
+        disposables.add(workDisposable);
+        return workDisposable;
       }
 
       @Override
-      public Subscription schedulePeriodically(Action0 action, long initialDelay, long period,
+      public Disposable schedulePeriodically(Runnable action, long initialDelay, long period,
           TimeUnit unit) {
-        if (subscriptions.isUnsubscribed()) {
-          return Subscriptions.unsubscribed();
+        if (disposables.isDisposed()) {
+          return Disposable.disposed();
         }
         ScheduledWork work = createWork(action, initialDelay, period);
-        Subscription subscription =
+        Disposable disposable =
             delegateWorker.schedulePeriodically(work, initialDelay, period, unit);
-        subscriptions.add(subscription);
-        ScheduledWorkSubscription workSubscription =
-            new ScheduledWorkSubscription(work, subscription);
-        subscriptions.add(workSubscription);
-        return workSubscription;
+        disposables.add(disposable);
+        ScheduledWorkDisposable workDisposable = new ScheduledWorkDisposable(work, disposable);
+        disposables.add(workDisposable);
+        return workDisposable;
       }
 
-      @Override public void unsubscribe() {
-        subscriptions.unsubscribe();
+      @Override public void dispose() {
+        disposables.dispose();
       }
 
-      @Override public boolean isUnsubscribed() {
-        return subscriptions.isUnsubscribed();
+      @Override public boolean isDisposed() {
+        return disposables.isDisposed();
       }
     };
   }
@@ -102,7 +97,7 @@ final class DelegatingIdlingResourceScheduler extends IdlingResourceScheduler {
     }
   }
 
-  ScheduledWork createWork(Action0 action, long delay, long period) {
+  ScheduledWork createWork(Runnable action, long delay, long period) {
     if (action instanceof ScheduledWork) {
       // Unwrap any re-scheduled work. We want each scheduler to get its own state machine.
       action = ((ScheduledWork) action).delegate;
@@ -115,23 +110,24 @@ final class DelegatingIdlingResourceScheduler extends IdlingResourceScheduler {
     return new ScheduledWork(action, startingState, period > 0L);
   }
 
-  final class ScheduledWork extends AtomicInteger implements Action0 {
-    static final int STATE_IDLE = 0; // --> STATE_RUNNING, STATE_UNSUBSCRIBED
-    static final int STATE_SCHEDULED = 1; // --> STATE_RUNNING, STATE_UNSUBSCRIBED
-    static final int STATE_RUNNING = 2; // --> STATE_IDLE, STATE_COMPLETED, STATE_UNSUBSCRIBED
-    static final int STATE_COMPLETED = 3; // --> STATE_UNSUBSCRIBED
-    static final int STATE_UNSUBSCRIBED = 4;
+  final class ScheduledWork extends AtomicInteger implements Runnable {
+    static final int STATE_IDLE = 0; // --> STATE_RUNNING, STATE_DISPOSED
+    static final int STATE_SCHEDULED = 1; // --> STATE_RUNNING, STATE_DISPOSED
+    static final int STATE_RUNNING = 2; // --> STATE_IDLE, STATE_COMPLETED, STATE_DISPOSED
+    static final int STATE_COMPLETED = 3; // --> STATE_DISPOSED
+    static final int STATE_DISPOSED = 4;
 
-    final Action0 delegate;
-    final boolean isPeriodic;
+    final Runnable delegate;
 
-    ScheduledWork(Action0 delegate, int startingState, boolean isPeriodic) {
+    private final boolean isPeriodic;
+
+    ScheduledWork(Runnable delegate, int startingState, boolean isPeriodic) {
       super(startingState);
       this.delegate = delegate;
       this.isPeriodic = isPeriodic;
     }
 
-    @Override public void call() {
+    @Override public void run() {
       for (;;) {
         int state = get();
         switch (state) {
@@ -142,9 +138,9 @@ final class DelegatingIdlingResourceScheduler extends IdlingResourceScheduler {
                 startWork();
               }
               try {
-                delegate.call();
+                delegate.run();
               } finally {
-                // Change state with a CAS to ensure we don't overwrite an unsubscribed state.
+                // Change state with a CAS to ensure we don't overwrite a disposed state.
                 compareAndSet(STATE_RUNNING, isPeriodic ? STATE_IDLE : STATE_COMPLETED);
                 stopWork();
               }
@@ -158,18 +154,18 @@ final class DelegatingIdlingResourceScheduler extends IdlingResourceScheduler {
           case STATE_COMPLETED:
             throw new IllegalStateException("Already completed");
 
-          case STATE_UNSUBSCRIBED:
+          case STATE_DISPOSED:
             return; // Nothing to do.
         }
       }
     }
 
-    void unsubscribe() {
+    void dispose() {
       for (;;) {
         int state = get();
-        if (state == STATE_UNSUBSCRIBED) {
+        if (state == STATE_DISPOSED) {
           return; // Nothing to do.
-        } else if (compareAndSet(state, STATE_UNSUBSCRIBED)) {
+        } else if (compareAndSet(state, STATE_DISPOSED)) {
           // If idle, startWork() hasn't been called so we don't need a matching stopWork().
           // If running, startWork() was called but the try/finally ensures a stopWork() call.
           // If completed, both startWork() and stopWork() have been called.
@@ -182,22 +178,22 @@ final class DelegatingIdlingResourceScheduler extends IdlingResourceScheduler {
     }
   }
 
-  static final class ScheduledWorkSubscription implements Subscription {
+  static final class ScheduledWorkDisposable implements Disposable {
     private final ScheduledWork work;
-    private final Subscription delegate;
+    private final Disposable delegate;
 
-    ScheduledWorkSubscription(ScheduledWork work, Subscription delegate) {
+    ScheduledWorkDisposable(ScheduledWork work, Disposable delegate) {
       this.delegate = delegate;
       this.work = work;
     }
 
-    @Override public void unsubscribe() {
-      work.unsubscribe();
-      delegate.unsubscribe();
+    @Override public void dispose() {
+      work.dispose();
+      delegate.dispose();
     }
 
-    @Override public boolean isUnsubscribed() {
-      return work.get() == ScheduledWork.STATE_UNSUBSCRIBED;
+    @Override public boolean isDisposed() {
+      return work.get() == ScheduledWork.STATE_DISPOSED;
     }
   }
 }

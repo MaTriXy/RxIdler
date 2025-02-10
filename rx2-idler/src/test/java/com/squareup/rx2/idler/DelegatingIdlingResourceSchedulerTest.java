@@ -1,6 +1,6 @@
 package com.squareup.rx2.idler;
 
-import android.support.test.espresso.IdlingResource;
+import androidx.test.espresso.IdlingResource;
 import io.reactivex.Scheduler;
 import io.reactivex.schedulers.TestScheduler;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -80,6 +80,8 @@ public final class DelegatingIdlingResourceSchedulerTest {
     assertEquals(1, action.count());
     delegate.advanceTimeBy(500, MILLISECONDS);
     assertIdle(1);
+    delegate.advanceTimeBy(1000, MILLISECONDS);
+    assertIdle(2);
   }
 
   @Test public void runningWorkReportsBusy() {
@@ -115,6 +117,13 @@ public final class DelegatingIdlingResourceSchedulerTest {
     worker.dispose();
     worker.schedule(new CountingRunnable());
     assertIdle(0);
+  }
+
+  @Test public void finishingWorkWithoutRegisteredCallbackDoesNotCrash() {
+    IdlingResourceScheduler scheduler = Rx2Idler.wrap(delegate, "Bob");
+    Scheduler.Worker worker = scheduler.createWorker();
+    worker.schedule(new CountingRunnable());
+    delegate.triggerActions();
   }
 
   private void assertBusy() {
